@@ -439,6 +439,27 @@ def build_account_report_html(target_account: str, account_total: dict[str, str]
 """.strip()
 
 
+def enable_auto_refresh(interval_seconds: int, *, key: str = "auto_refresh") -> None:
+    if interval_seconds <= 0:
+        return
+
+    refresh_ms = interval_seconds * 1000
+    components.html(
+        f"""
+        <script>
+            const timerKey = "{key}";
+            if (window[timerKey]) {{
+                clearTimeout(window[timerKey]);
+            }}
+            window[timerKey] = setTimeout(function() {{
+                window.parent.location.reload();
+            }}, {refresh_ms});
+        </script>
+        """,
+        height=0,
+    )
+
+
 # -----------------------------
 # Rendering
 # -----------------------------
@@ -581,14 +602,33 @@ def render_daily_client_report() -> None:
         st.warning("Add BRIGHTCALL_DAILY_STATS_API_KEY to Streamlit secrets to enable this report.")
         return
 
-    toolbar_left, toolbar_right = st.columns([1, 3])
+    toolbar_left, toolbar_mid, toolbar_right = st.columns([1.1, 1, 3.2])
     with toolbar_left:
         refresh_daily = st.button("Refresh daily report data")
+    with toolbar_mid:
+        auto_refresh_label = st.selectbox(
+            "Auto-refresh",
+            options=["Off", "30 sec", "60 sec", "120 sec", "300 sec"],
+            index=0,
+        )
     with toolbar_right:
-        st.info("This report uses the static daily stats API key from Streamlit secrets.")
+        st.empty()
 
-    if refresh_daily:
+    auto_refresh_seconds = {
+        "Off": 0,
+        "30 sec": 30,
+        "60 sec": 60,
+        "120 sec": 120,
+        "300 sec": 300,
+    }[auto_refresh_label]
+
+    if refresh_daily or auto_refresh_seconds > 0:
         fetch_daily_projects_html.clear()
+
+    if auto_refresh_seconds > 0:
+        enable_auto_refresh(auto_refresh_seconds, key="daily_client_report_refresh")
+
+    st.caption("Daily stats API key is read from Streamlit secrets.")
 
     try:
         html_payload = fetch_daily_projects_html(daily_api_key)
