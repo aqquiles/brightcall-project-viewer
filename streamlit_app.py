@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import inspect
 import re
 from typing import Any
 
@@ -439,6 +440,23 @@ def build_account_report_html(target_account: str, account_total: dict[str, str]
 """.strip()
 
 
+
+def render_auto_refresh_selectbox(options: list[str]) -> str:
+    selectbox_kwargs = {
+        "label": "Auto-refresh interval",
+        "options": options,
+        "index": 0,
+        "key": "daily_report_auto_refresh",
+    }
+
+    if "label_visibility" in inspect.signature(st.selectbox).parameters:
+        selectbox_kwargs["label_visibility"] = "collapsed"
+        return st.selectbox(**selectbox_kwargs)
+
+    st.markdown("&nbsp;", unsafe_allow_html=True)
+    selectbox_kwargs["label"] = " "
+    return st.selectbox(**selectbox_kwargs)
+
 def enable_auto_refresh(interval_seconds: int, *, key: str = "auto_refresh") -> None:
     if interval_seconds <= 0:
         return
@@ -602,33 +620,40 @@ def render_daily_client_report() -> None:
         st.warning("Add BRIGHTCALL_DAILY_STATS_API_KEY to Streamlit secrets to enable this report.")
         return
 
-    toolbar_left, toolbar_mid, toolbar_right = st.columns([1.1, 1, 3.2])
+    toolbar_left, toolbar_mid, toolbar_right = st.columns([1.15, 1.2, 2.65])
     with toolbar_left:
-        refresh_daily = st.button("Refresh daily report data")
+        refresh_daily = st.button("Refresh daily report data", use_container_width=True)
     with toolbar_mid:
-        auto_refresh_label = st.selectbox(
-            "Auto-refresh",
-            options=["Off", "30 sec", "60 sec", "120 sec", "300 sec"],
-            index=0,
+        auto_refresh_label = render_auto_refresh_selectbox(
+            [
+                "Off",
+                "30 seconds",
+                "1 minute",
+                "5 minutes",
+                "10 minutes",
+                "15 minutes",
+                "30 minutes",
+            ]
         )
     with toolbar_right:
-        st.empty()
+        st.caption("Daily stats API key is read from Streamlit secrets.")
 
     auto_refresh_seconds = {
         "Off": 0,
-        "30 sec": 30,
-        "60 sec": 60,
-        "120 sec": 120,
-        "300 sec": 300,
+        "30 seconds": 30,
+        "1 minute": 60,
+        "5 minutes": 300,
+        "10 minutes": 600,
+        "15 minutes": 900,
+        "30 minutes": 1800,
     }[auto_refresh_label]
 
-    if refresh_daily or auto_refresh_seconds > 0:
+    if refresh_daily:
         fetch_daily_projects_html.clear()
 
     if auto_refresh_seconds > 0:
+        fetch_daily_projects_html.clear()
         enable_auto_refresh(auto_refresh_seconds, key="daily_client_report_refresh")
-
-    st.caption("Daily stats API key is read from Streamlit secrets.")
 
     try:
         html_payload = fetch_daily_projects_html(daily_api_key)
