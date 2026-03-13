@@ -1,86 +1,60 @@
-# Brightcall Project Viewer
+# Brightcall Project Viewer + Daily Client Report
 
-Small Streamlit app to inspect Brightcall projects by:
-- Status
-- Tag
-- Transfer Number
-- Project name
+This version keeps the existing Project Viewer behavior and adds a second tab called **Daily client report**.
 
-## What the app shows
+## What the new report does
 
-The app calls the Brightcall projects endpoint and builds a table with:
-- **Status**: `Running` when `isPlaying = true`, otherwise `Not running`
-- **Tag**: `aiAgentDialerProjectTag`, or `aiInfoV2.aiAgentDialerProjectTag`, or `(blank)`
-- **Transfer Number**: `aiAgentTransferPhoneNumber`, or `(missing)`
-- **Project**: project name, or `(no name)`
+It calls:
+- `https://api.dialer.brightcall.ai/api/v1/stat/daily-projects?apiKey=...`
 
-It also shows:
-- summary metrics
-- grouped summary table
-- detailed project table
-- CSV download
-- sidebar filters
+The endpoint returns HTML, not JSON. The app parses the HTML table, finds account-level rows by email, groups the child project rows under that account, and lets you generate a reusable report for any available client email.
+
+## New secrets expected
+
+Add these to `.streamlit/secrets.toml`:
+
+```toml
+BRIGHTCALL_API_KEY = "your-projects-endpoint-key"
+BRIGHTCALL_DAILY_STATS_API_KEY = "your-daily-projects-endpoint-key"
+DEFAULT_DAILY_REPORT_ACCOUNT = "lionrock@highlevelvoice.ai"
+```
+
+`DEFAULT_DAILY_REPORT_ACCOUNT` is optional.
+
+## New UI structure
+
+### Tab 1 — Project viewer
+Keeps the existing project viewer workflow:
+- projects endpoint
+- running/not running logic
+- tag fallback logic
+- transfer number fallback logic
+- project search
+- archived filter
+- grouped summary
+- running-project operational view
+
+### Tab 2 — Daily client report
+Adds:
+- account email selector
+- manual account email input
+- KPI cards for the selected account
+- focused project performance table
+- raw account/project tables
+- downloadable CSV for the selected account
+- downloadable HTML report for the selected account
+- HTML preview inside Streamlit
+
+## Parsing assumptions for the daily-projects report
+
+The HTML parser treats a row as an **account total** row when the first cell contains an email address.
+All following non-email rows are treated as project rows for that account until the next email row appears.
+
+This is more reusable than hardcoding Lionrock.
 
 ## Files
 
-- `streamlit_app.py`
-- `requirements.txt`
-- `.gitignore`
-- `.streamlit/secrets.toml.example`
+Use:
+- `streamlit_app_full.py`
 
-## Setup
-
-Create a virtual environment if you want:
-
-```bash
-python -m venv .venv
-```
-
-Activate it:
-
-### Windows (PowerShell)
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-### macOS / Linux
-
-```bash
-source .venv/bin/activate
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Secrets
-
-Create this file locally:
-
-```text
-.streamlit/secrets.toml
-```
-
-Put your API key inside it:
-
-```toml
-BRIGHTCALL_API_KEY = "your_real_api_key_here"
-```
-
-Do **not** commit that file. The `.gitignore` already excludes it.
-
-## Run locally
-
-```bash
-streamlit run streamlit_app.py
-```
-
-## Notes
-
-- The app caches API results for 5 minutes.
-- You can override the API key manually in the sidebar.
-- You can include or exclude missing transfer numbers.
-- You can filter by status, tag, and transfer number.
+This file is intended to replace or supersede the current `streamlit_app.py` once you are ready.
