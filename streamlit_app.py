@@ -37,6 +37,31 @@ DAILY_COLUMNS = [
     "sN",
 ]
 
+DAILY_COLUMN_LABELS = {
+    "userProject": "User/Project",
+    "contactsAll": "Contacts All",
+    "contactsFailed": "Contacts Failed",
+    "contactsAvailable": "Contacts Available",
+    "contactsReady": "Contacts Ready",
+    "linesLimit": "Lines Limit",
+    "callsNow": "Calls Now",
+    "callsToday": "Calls Today",
+    "newContacts": "New Contacts",
+    "pp": "PP",
+    "cpp": "CPP",
+    "tr": "TR",
+    "cptr": "CPTR",
+    "qt": "QT",
+    "cpqt": "CPQT",
+    "sh": "SH",
+    "cpsh": "CPSH",
+    "limit": "Limit",
+    "consumed": "Consumed",
+    "hoursNow": "Hours Now",
+    "timezone": "Timezone",
+    "sN": "sN",
+}
+
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 TAG_RE = re.compile(r"<[^>]*>")
 ROW_RE = re.compile(r"<tr[^>]*>([\s\S]*?)</tr>", re.IGNORECASE)
@@ -325,8 +350,26 @@ def build_account_csv(account_total: dict[str, str] | None, projects: list[dict[
     return "\n".join(lines)
 
 
+def display_daily_dataframe(records: list[dict[str, str]] | pd.DataFrame, *, use_container_width: bool = True) -> None:
+    if isinstance(records, pd.DataFrame):
+        df = records.copy()
+    else:
+        df = pd.DataFrame(records)
+
+    if df.empty:
+        st.info("No data available.")
+        return
+
+    for column in DAILY_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+
+    df = df[DAILY_COLUMNS].rename(columns=DAILY_COLUMN_LABELS)
+    st.dataframe(df, use_container_width=use_container_width, hide_index=True)
+
+
 def _render_html_table(columns: list[str], rows: list[dict[str, str]], account_row: bool = False) -> str:
-    header_html = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+    header_html = "".join(f"<th>{html.escape(DAILY_COLUMN_LABELS.get(column, column))}</th>" for column in columns)
     body_rows: list[str] = []
 
     row_class = " class=\"account-row\"" if account_row else ""
@@ -338,41 +381,13 @@ def _render_html_table(columns: list[str], rows: list[dict[str, str]], account_r
 
 
 def build_account_report_html(target_account: str, account_total: dict[str, str] | None, projects: list[dict[str, str]]) -> str:
-    account_columns = [
-        "userProject",
-        "contactsAll",
-        "linesLimit",
-        "callsNow",
-        "callsToday",
-        "tr",
-        "cptr",
-        "qt",
-        "cpqt",
-        "consumed",
-        "hoursNow",
-        "timezone",
-    ]
-    project_columns = [
-        "userProject",
-        "linesLimit",
-        "callsNow",
-        "callsToday",
-        "tr",
-        "cptr",
-        "qt",
-        "cpqt",
-        "consumed",
-        "hoursNow",
-        "timezone",
-    ]
-
     account_block = (
-        _render_html_table(account_columns, [account_total], account_row=True)
+        _render_html_table(DAILY_COLUMNS, [account_total], account_row=True)
         if account_total
         else "<p class='no-data'>Selected account was not found in the response.</p>"
     )
     project_block = (
-        _render_html_table(project_columns, projects)
+        _render_html_table(DAILY_COLUMNS, projects)
         if projects
         else "<p class='no-data'>No project rows were found for this account.</p>"
     )
@@ -385,63 +400,43 @@ def build_account_report_html(target_account: str, account_total: dict[str, str]
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
 <title>Brightcall Daily Report - {html.escape(target_account)}</title>
 <style>
-    body {{ font-family: Arial, sans-serif; padding: 24px; color: #1f2937; }}
-    h1 {{ margin-bottom: 8px; }}
-    .subtitle {{ color: #6b7280; margin-bottom: 24px; }}
-    .section {{ margin-top: 28px; }}
-    .cards {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }}
-    .card {{ border: 1px solid #d1d5db; border-radius: 10px; padding: 14px 16px; min-width: 140px; }}
-    .label {{ font-size: 12px; color: #6b7280; text-transform: uppercase; }}
-    .value {{ font-size: 22px; font-weight: 700; margin-top: 6px; }}
-    table {{ border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 12px; }}
-    th, td {{ border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }}
-    th {{ background: #111827; color: white; }}
-    tr:nth-child(even) {{ background: #f9fafb; }}
-    .account-row {{ background: #eff6ff !important; font-weight: 700; }}
-    .no-data {{ color: #6b7280; font-style: italic; }}
+    body {{ font-family: Arial, sans-serif; padding: 20px; }}
+    h1 {{ color: #333; margin-bottom: 6px; }}
+    .subtitle {{ color: #555; margin-bottom: 24px; }}
+    h2 {{ color: #333; margin-top: 32px; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 15px; font-size: 12px; }}
+    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+    th {{ background-color: #007bff; color: white; }}
+    tr:nth-child(even) {{ background-color: #f9f9f9; }}
+    .account-row {{ background-color: #e7f3ff !important; font-weight: bold; }}
+    .cards {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0 8px 0; }}
+    .card {{ border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; min-width: 120px; }}
+    .label {{ font-size: 12px; color: #666; }}
+    .value {{ font-size: 24px; font-weight: bold; margin-top: 4px; }}
+    .no-data {{ color: #999; font-style: italic; padding: 20px 0; }}
 </style>
 </head>
 <body>
     <h1>Brightcall Daily Client Report</h1>
     <div class=\"subtitle\">Account: {html.escape(target_account)}</div>
+
     <div class=\"cards\">
         <div class=\"card\"><div class=\"label\">Projects</div><div class=\"value\">{len(projects)}</div></div>
         <div class=\"card\"><div class=\"label\">Calls Today</div><div class=\"value\">{html.escape(str((account_total or {{}}).get('callsToday', '')))}</div></div>
         <div class=\"card\"><div class=\"label\">TR</div><div class=\"value\">{html.escape(str((account_total or {{}}).get('tr', '')))}</div></div>
         <div class=\"card\"><div class=\"label\">QT</div><div class=\"value\">{html.escape(str((account_total or {{}}).get('qt', '')))}</div></div>
+        <div class=\"card\"><div class=\"label\">CPTR</div><div class=\"value\">{html.escape(str((account_total or {{}}).get('cptr', '')))}</div></div>
         <div class=\"card\"><div class=\"label\">CPQT</div><div class=\"value\">{html.escape(str((account_total or {{}}).get('cpqt', '')))}</div></div>
     </div>
-    <div class=\"section\">
-        <h2>Account Total</h2>
-        {account_block}
-    </div>
-    <div class=\"section\">
-        <h2>Projects ({len(projects)})</h2>
-        {project_block}
-    </div>
+
+    <h2>Account Total</h2>
+    {account_block}
+
+    <h2>Projects ({len(projects)})</h2>
+    {project_block}
 </body>
 </html>
 """.strip()
-
-
-def build_focus_projects_df(projects: list[dict[str, str]]) -> pd.DataFrame:
-    focus_columns = [
-        "userProject",
-        "linesLimit",
-        "callsNow",
-        "callsToday",
-        "tr",
-        "cptr",
-        "qt",
-        "cpqt",
-        "consumed",
-        "hoursNow",
-        "timezone",
-    ]
-    if not projects:
-        return pd.DataFrame(columns=focus_columns)
-
-    return pd.DataFrame(projects)[focus_columns]
 
 
 # -----------------------------
@@ -641,8 +636,8 @@ def render_daily_client_report() -> None:
 
     account_total = account_section.get("account_total")
     projects = account_section.get("projects", [])
-    focus_projects_df = build_focus_projects_df(projects)
     account_total_df = pd.DataFrame([account_total]) if account_total else pd.DataFrame(columns=DAILY_COLUMNS)
+    projects_df = pd.DataFrame(projects) if projects else pd.DataFrame(columns=DAILY_COLUMNS)
     csv_content = build_account_csv(account_total, projects)
     html_report = build_account_report_html(target_account, account_total, projects)
 
@@ -654,67 +649,46 @@ def render_daily_client_report() -> None:
     m5.metric("CPTR", (account_total or {}).get("cptr", ""))
     m6.metric("CPQT", (account_total or {}).get("cpqt", ""))
 
-    overview_tab, projects_tab, raw_tab, html_tab = st.tabs(
-        ["Overview", "Projects", "Raw tables", "HTML report"]
-    )
+    st.markdown("### Account Total")
+    if account_total:
+        display_daily_dataframe(account_total_df)
+    else:
+        st.info("No account total row was found for this account.")
 
-    with overview_tab:
-        st.markdown("**Account total**")
-        overview_columns = [
-            "userProject",
-            "contactsAll",
-            "linesLimit",
-            "callsNow",
-            "callsToday",
-            "tr",
-            "cptr",
-            "qt",
-            "cpqt",
-            "consumed",
-            "hoursNow",
-            "timezone",
-        ]
-        if account_total:
-            st.dataframe(account_total_df[overview_columns], use_container_width=True, hide_index=True)
-        else:
-            st.info("No account total row was found for this account.")
+    st.markdown(f"### Projects ({len(projects)})")
+    if projects:
+        display_daily_dataframe(projects_df)
+    else:
+        st.info("No project rows were found for this account.")
 
-        st.markdown("**Report exports**")
-        export_left, export_right = st.columns(2)
-        with export_left:
-            st.download_button(
-                "Download account CSV",
-                data=csv_content.encode("utf-8"),
-                file_name=f"{target_account.replace('@', '_at_')}_daily_report.csv",
-                mime="text/csv",
-            )
-        with export_right:
-            st.download_button(
-                "Download HTML report",
-                data=html_report.encode("utf-8"),
-                file_name=f"{target_account.replace('@', '_at_')}_daily_report.html",
-                mime="text/html",
-            )
-
-    with projects_tab:
-        st.markdown("**Project performance**")
-        if focus_projects_df.empty:
-            st.info("No project rows were found for this account.")
-        else:
-            st.dataframe(focus_projects_df, use_container_width=True, hide_index=True)
-
-    with raw_tab:
-        st.markdown("**Account total row**")
-        st.dataframe(account_total_df, use_container_width=True, hide_index=True)
-        st.markdown("**Project rows**")
-        st.dataframe(pd.DataFrame(projects), use_container_width=True, hide_index=True)
-
-    with html_tab:
-        st.markdown("**HTML preview**")
-        components.html(html_report, height=850, scrolling=True)
+    st.markdown("### Report exports")
+    export_left, export_right = st.columns(2)
+    with export_left:
+        st.download_button(
+            "Download account CSV",
+            data=csv_content.encode("utf-8"),
+            file_name=f"{target_account.replace('@', '_at_')}_daily_report.csv",
+            mime="text/csv",
+        )
+    with export_right:
+        st.download_button(
+            "Download HTML report",
+            data=html_report.encode("utf-8"),
+            file_name=f"{target_account.replace('@', '_at_')}_daily_report.html",
+            mime="text/html",
+        )
 
     with st.expander("Show discovered account emails"):
         st.write(account_options)
+
+    with st.expander("Show raw tables"):
+        st.markdown("**Account total row**")
+        st.dataframe(account_total_df, use_container_width=True, hide_index=True)
+        st.markdown("**Project rows**")
+        st.dataframe(projects_df, use_container_width=True, hide_index=True)
+
+    with st.expander("Show HTML report preview"):
+        components.html(html_report, height=900, scrolling=True)
 
     with st.expander("Show raw response preview"):
         st.code(html_payload[:5000], language="html")
