@@ -457,25 +457,9 @@ def render_auto_refresh_selectbox(options: list[str]) -> str:
     selectbox_kwargs["label"] = " "
     return st.selectbox(**selectbox_kwargs)
 
-def enable_auto_refresh(interval_seconds: int, *, key: str = "auto_refresh") -> None:
-    if interval_seconds <= 0:
-        return
 
-    refresh_ms = interval_seconds * 1000
-    components.html(
-        f"""
-        <script>
-            const timerKey = "{key}";
-            if (window[timerKey]) {{
-                clearTimeout(window[timerKey]);
-            }}
-            window[timerKey] = setTimeout(function() {{
-                window.parent.location.reload();
-            }}, {refresh_ms});
-        </script>
-        """,
-        height=0,
-    )
+def supports_fragment_auto_refresh() -> bool:
+    return hasattr(st, "fragment")
 
 
 # -----------------------------
@@ -620,6 +604,9 @@ def render_daily_client_report() -> None:
         st.warning("Add BRIGHTCALL_DAILY_STATS_API_KEY to Streamlit secrets to enable this report.")
         return
 
+    if "daily_report_manual_refresh_nonce" not in st.session_state:
+        st.session_state["daily_report_manual_refresh_nonce"] = 0
+
     toolbar_left, toolbar_mid, toolbar_right = st.columns([1.15, 1.2, 2.65])
     with toolbar_left:
         refresh_daily = st.button("Refresh daily report data", use_container_width=True)
@@ -649,114 +636,132 @@ def render_daily_client_report() -> None:
     }[auto_refresh_label]
 
     if refresh_daily:
+        st.session_state["daily_report_manual_refresh_nonce"] += 1
         fetch_daily_projects_html.clear()
 
-    if auto_refresh_seconds > 0:
-        fetch_daily_projects_html.clear()
-        enable_auto_refresh(auto_refresh_seconds, key="daily_client_report_refresh")
+    if auto_refresh_seconds > 0 and not supports_fragment_auto_refresh():
+        st.caption("Your Streamlit version does not support fragment auto-refresh, so timed refresh may still reload the page.")
 
-    try:
-        html_payload = fetch_daily_projects_html(daily_api_key)
-        sections = parse_daily_sections(html_payload)
-    except requests.HTTPError as exc:
-        st.error(f"HTTP error while calling the daily-projects endpoint: {exc}")
-        return
-    except requests.RequestException as exc:
-        st.error(f"Request error while calling the daily-projects endpoint: {exc}")
-        return
-    except Exception as exc:
-        st.error(f"Unexpected error while building the daily client report: {exc}")
-        return
+    run_every_value = auto_refresh_seconds if auto_refresh_seconds > 0 and supports_fragment_auto_refresh() else None
 
-    if not sections:
-        st.warning("No account sections were found in the daily-projects HTML response.")
+    def _render_daily_report_content() -> None:
+        if auto_refresh_seconds > 0:
+            fetch_daily_projects_html.clear()
+
+        try:
+            html_payload = fetch_daily_projects_html(daily_api_key)
+            sections = parse_daily_sections(html_payload)
+        except requests.HTTPError as exc:
+            st.error(f"HTTP error while calling the daily-projects endpoint: {exc}")
+            return
+        except requests.RequestException as exc:
+            st.error(f"Request error while calling the daily-projects endpoint: {exc}")
+            return
+        except Exception as exc:
+            st.error(f"Unexpected error while building the daily client report: {exc}")
+            return
+
+        if not sections:
+            st.warning("No account sections were found in the daily-projects HTML response.")
+            with st.expander("Show raw response preview"):
+                st.code(html_payload[:5000], language="html")
+            return
+
+        account_options = sorted(sections.keys())
+        default_index = account_options.index(default_account.lower()) if default_account and default_account.lower() in account_options else 0
+
+        selector_col, input_col = st.columns([1, 1])
+        with selector_col:
+            selected_account = st.selectbox(
+                "Select account email",
+                options=account_options,
+                index=default_index,
+                key="daily_report_selected_account",
+            )
+        with input_col:
+            manual_account = st.text_input(
+                "Or type account email",
+                value=default_account,
+                help="Use this when you want to jump directly to a specific client email.",
+                key="daily_report_manual_account",
+            ).strip().lower()
+
+        target_account = manual_account or selected_account
+        account_section = sections.get(target_account)
+
+        if account_section is None:
+            st.error("That account email was not found in the current daily-projects response.")
+            st.write("Available accounts:", ", ".join(account_options))
+            return
+
+        account_total = account_section.get("account_total")
+        projects = account_section.get("projects", [])
+        account_total_df = pd.DataFrame([account_total]) if account_total else pd.DataFrame(columns=DAILY_COLUMNS)
+        projects_df = pd.DataFrame(projects) if projects else pd.DataFrame(columns=DAILY_COLUMNS)
+        csv_content = build_account_csv(account_total, projects)
+        html_report = build_account_report_html(target_account, account_total, projects)
+
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        m1.metric("Projects", len(projects))
+        m2.metric("Lines Running", (account_total or {}).get("callsNow", ""))
+        m3.metric("Calls Today", (account_total or {}).get("callsToday", ""))
+        m4.metric("TR", (account_total or {}).get("tr", ""))
+        m5.metric("QT", (account_total or {}).get("qt", ""))
+        m6.metric("CPTR", (account_total or {}).get("cptr", ""))
+        m7.metric("CPQT", (account_total or {}).get("cpqt", ""))
+
+        st.markdown("### Account Total")
+        if account_total:
+            display_daily_dataframe(account_total_df)
+        else:
+            st.info("No account total row was found for this account.")
+
+        st.markdown(f"### Projects ({len(projects)})")
+        if projects:
+            display_daily_dataframe(projects_df)
+        else:
+            st.info("No project rows were found for this account.")
+
+        st.markdown("### Report exports")
+        export_left, export_right = st.columns(2)
+        with export_left:
+            st.download_button(
+                "Download account CSV",
+                data=csv_content.encode("utf-8"),
+                file_name=f"{target_account.replace('@', '_at_')}_daily_report.csv",
+                mime="text/csv",
+            )
+        with export_right:
+            st.download_button(
+                "Download HTML report",
+                data=html_report.encode("utf-8"),
+                file_name=f"{target_account.replace('@', '_at_')}_daily_report.html",
+                mime="text/html",
+            )
+
+        with st.expander("Show discovered account emails"):
+            st.write(account_options)
+
+        with st.expander("Show raw tables"):
+            st.markdown("**Account total row**")
+            st.dataframe(account_total_df, use_container_width=True, hide_index=True)
+            st.markdown("**Project rows**")
+            st.dataframe(projects_df, use_container_width=True, hide_index=True)
+
+        with st.expander("Show HTML report preview"):
+            components.html(html_report, height=900, scrolling=True)
+
         with st.expander("Show raw response preview"):
             st.code(html_payload[:5000], language="html")
-        return
 
-    account_options = sorted(sections.keys())
-    default_index = account_options.index(default_account.lower()) if default_account and default_account.lower() in account_options else 0
+    if run_every_value is not None:
+        @st.fragment(run_every=run_every_value)
+        def _auto_refreshing_fragment() -> None:
+            _render_daily_report_content()
 
-    selector_col, input_col = st.columns([1, 1])
-    with selector_col:
-        selected_account = st.selectbox(
-            "Select account email",
-            options=account_options,
-            index=default_index,
-        )
-    with input_col:
-        manual_account = st.text_input(
-            "Or type account email",
-            value=default_account,
-            help="Use this when you want to jump directly to a specific client email.",
-        ).strip().lower()
-
-    target_account = manual_account or selected_account
-    account_section = sections.get(target_account)
-
-    if account_section is None:
-        st.error("That account email was not found in the current daily-projects response.")
-        st.write("Available accounts:", ", ".join(account_options))
-        return
-
-    account_total = account_section.get("account_total")
-    projects = account_section.get("projects", [])
-    account_total_df = pd.DataFrame([account_total]) if account_total else pd.DataFrame(columns=DAILY_COLUMNS)
-    projects_df = pd.DataFrame(projects) if projects else pd.DataFrame(columns=DAILY_COLUMNS)
-    csv_content = build_account_csv(account_total, projects)
-    html_report = build_account_report_html(target_account, account_total, projects)
-
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Projects", len(projects))
-    m2.metric("Calls Today", (account_total or {}).get("callsToday", ""))
-    m3.metric("TR", (account_total or {}).get("tr", ""))
-    m4.metric("QT", (account_total or {}).get("qt", ""))
-    m5.metric("CPTR", (account_total or {}).get("cptr", ""))
-    m6.metric("CPQT", (account_total or {}).get("cpqt", ""))
-
-    st.markdown("### Account Total")
-    if account_total:
-        display_daily_dataframe(account_total_df)
+        _auto_refreshing_fragment()
     else:
-        st.info("No account total row was found for this account.")
-
-    st.markdown(f"### Projects ({len(projects)})")
-    if projects:
-        display_daily_dataframe(projects_df)
-    else:
-        st.info("No project rows were found for this account.")
-
-    st.markdown("### Report exports")
-    export_left, export_right = st.columns(2)
-    with export_left:
-        st.download_button(
-            "Download account CSV",
-            data=csv_content.encode("utf-8"),
-            file_name=f"{target_account.replace('@', '_at_')}_daily_report.csv",
-            mime="text/csv",
-        )
-    with export_right:
-        st.download_button(
-            "Download HTML report",
-            data=html_report.encode("utf-8"),
-            file_name=f"{target_account.replace('@', '_at_')}_daily_report.html",
-            mime="text/html",
-        )
-
-    with st.expander("Show discovered account emails"):
-        st.write(account_options)
-
-    with st.expander("Show raw tables"):
-        st.markdown("**Account total row**")
-        st.dataframe(account_total_df, use_container_width=True, hide_index=True)
-        st.markdown("**Project rows**")
-        st.dataframe(projects_df, use_container_width=True, hide_index=True)
-
-    with st.expander("Show HTML report preview"):
-        components.html(html_report, height=900, scrolling=True)
-
-    with st.expander("Show raw response preview"):
-        st.code(html_payload[:5000], language="html")
+        _render_daily_report_content()
 
 
 def main() -> None:
