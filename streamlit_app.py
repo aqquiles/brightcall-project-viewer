@@ -512,7 +512,21 @@ def render_clipboard_tools(df: pd.DataFrame, *, key: str) -> None:
     table_text = working_df.to_csv(index=False, sep="\t")
     column_options = list(working_df.columns)
 
-    col1, col2, col3 = st.columns([1.0, 1.55, 1.15])
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stButton"] > button[kind="secondary"] {
+            padding: 0.32rem 0.75rem;
+            min-height: 2.1rem;
+            border-radius: 0.6rem;
+            font-size: 0.92rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns([0.78, 0.95, 1.45])
 
     with col1:
         copy_table = st.button(
@@ -522,18 +536,18 @@ def render_clipboard_tools(df: pd.DataFrame, *, key: str) -> None:
         )
 
     with col2:
+        copy_column = st.button(
+            "Copy column",
+            key=f"{key}_copy_column",
+            use_container_width=True,
+        )
+
+    with col3:
         selected_column = st.selectbox(
             "Column to copy",
             options=column_options,
             key=f"{key}_copy_column_select",
             label_visibility="collapsed",
-        )
-
-    with col3:
-        copy_column = st.button(
-            "Copy column",
-            key=f"{key}_copy_column",
-            use_container_width=True,
         )
 
     if copy_table:
