@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import inspect
+import json
 import re
 from typing import Any
 
@@ -351,7 +352,12 @@ def build_account_csv(account_total: dict[str, str] | None, projects: list[dict[
     return "\n".join(lines)
 
 
-def display_daily_dataframe(records: list[dict[str, str]] | pd.DataFrame, *, use_container_width: bool = True) -> None:
+def display_daily_dataframe(
+    records: list[dict[str, str]] | pd.DataFrame,
+    *,
+    use_container_width: bool = True,
+    clipboard_key: str | None = None,
+) -> None:
     if isinstance(records, pd.DataFrame):
         df = records.copy()
     else:
@@ -366,6 +372,8 @@ def display_daily_dataframe(records: list[dict[str, str]] | pd.DataFrame, *, use
             df[column] = ""
 
     df = df[DAILY_COLUMNS].rename(columns=DAILY_COLUMN_LABELS)
+    if clipboard_key:
+        render_clipboard_tools(df, key=clipboard_key)
     st.dataframe(df, use_container_width=use_container_width, hide_index=True)
 
 
@@ -458,8 +466,77 @@ def render_auto_refresh_selectbox(options: list[str]) -> str:
     return st.selectbox(**selectbox_kwargs)
 
 
-def supports_fragment_auto_refresh() -> bool:
-    return hasattr(st, "fragment")
+
+def render_clipboard_tools(df: pd.DataFrame, *, key: str, height: int = 54) -> None:
+    if df.empty:
+        return
+
+    working_df = df.copy().fillna("")
+    working_df.columns = [str(column) for column in working_df.columns]
+
+    table_text = working_df.to_csv(index=False, sep="\t")
+    column_text_map = {
+        column: "\n".join([column] + working_df[column].astype(str).tolist())
+        for column in working_df.columns
+    }
+
+    option_html = "".join(
+        f'<option value="{html.escape(column)}">{html.escape(column)}</option>'
+        for column in working_df.columns
+    )
+
+    component_html = f"""
+    <div style="display:flex; align-items:center; gap:8px; margin:0 0 8px 0; font-family: sans-serif;">
+        <button id="copy-table-{key}" style="padding:6px 10px; border-radius:6px; border:1px solid #666; background:transparent; cursor:pointer;">
+            Copy table
+        </button>
+        <select id="copy-column-select-{key}" style="padding:6px 10px; border-radius:6px; border:1px solid #666; background:transparent; min-width:160px;">
+            {option_html}
+        </select>
+        <button id="copy-column-{key}" style="padding:6px 10px; border-radius:6px; border:1px solid #666; background:transparent; cursor:pointer;">
+            Copy column
+        </button>
+        <span id="copy-status-{key}" style="font-size:12px; opacity:0.8;"></span>
+    </div>
+    <script>
+        const tableText_{key} = {json.dumps(table_text)};
+        const columnMap_{key} = {json.dumps(column_text_map)};
+
+        async function copyText_{key}(text) {{
+            const status = document.getElementById("copy-status-{key}");
+            try {{
+                if (navigator.clipboard && window.isSecureContext) {{
+                    await navigator.clipboard.writeText(text);
+                }} else {{
+                    const temp = document.createElement("textarea");
+                    temp.value = text;
+                    temp.style.position = "fixed";
+                    temp.style.left = "-9999px";
+                    document.body.appendChild(temp);
+                    temp.focus();
+                    temp.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(temp);
+                }}
+                status.textContent = "Copied";
+                setTimeout(() => {{ status.textContent = ""; }}, 1500);
+            }} catch (error) {{
+                status.textContent = "Copy failed";
+                setTimeout(() => {{ status.textContent = ""; }}, 2000);
+            }}
+        }}
+
+        document.getElementById("copy-table-{key}").addEventListener("click", function() {{
+            copyText_{key}(tableText_{key});
+        }});
+
+        document.getElementById("copy-column-{key}").addEventListener("click", function() {{
+            const selected = document.getElementById("copy-column-select-{key}").value;
+            copyText_{key}(columnMap_{key}[selected] || "");
+        }});
+    </script>
+    """
+    components.html(component_html, height=height)
 
 
 # -----------------------------
@@ -557,12 +634,15 @@ def render_project_viewer() -> None:
 
             with left:
                 st.markdown("**Running by tag and transfer number**")
+                render_clipboard_tools(running_summary_df, key="running_summary")
                 st.dataframe(running_summary_df, use_container_width=True, hide_index=True)
 
             with right:
                 st.markdown("**Exact running projects**")
+                exact_running_df = running_df[["Tag", "Transfer Number", "Project", "Archived"]].copy()
+                render_clipboard_tools(exact_running_df, key="exact_running_projects")
                 st.dataframe(
-                    running_df[["Tag", "Transfer Number", "Project", "Archived"]],
+                    exact_running_df,
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -578,10 +658,12 @@ def render_project_viewer() -> None:
     with summary_tab:
         summary_df = build_project_summary(filtered_df)
         st.caption("Grouped by Status → Tag → Transfer Number")
+        render_clipboard_tools(summary_df, key="grouped_summary")
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
     with all_projects_tab:
         st.caption("Sorted by Running first, then Tag, Transfer Number, and Project.")
+        render_clipboard_tools(filtered_df, key="all_projects")
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
 
         csv_data = filtered_df.to_csv(index=False).encode("utf-8")
@@ -712,13 +794,13 @@ def render_daily_client_report() -> None:
 
         st.markdown("### Account Total")
         if account_total:
-            display_daily_dataframe(account_total_df)
+            display_daily_dataframe(account_total_df, clipboard_key="daily_account_total")
         else:
             st.info("No account total row was found for this account.")
 
         st.markdown(f"### Projects ({len(projects)})")
         if projects:
-            display_daily_dataframe(projects_df)
+            display_daily_dataframe(projects_df, clipboard_key="daily_projects")
         else:
             st.info("No project rows were found for this account.")
 
@@ -744,8 +826,12 @@ def render_daily_client_report() -> None:
 
         with st.expander("Show raw tables"):
             st.markdown("**Account total row**")
+            if not account_total_df.empty:
+                render_clipboard_tools(account_total_df, key="raw_account_total")
             st.dataframe(account_total_df, use_container_width=True, hide_index=True)
             st.markdown("**Project rows**")
+            if not projects_df.empty:
+                render_clipboard_tools(projects_df, key="raw_project_rows")
             st.dataframe(projects_df, use_container_width=True, hide_index=True)
 
         with st.expander("Show HTML report preview"):
