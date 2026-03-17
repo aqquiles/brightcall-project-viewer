@@ -467,7 +467,42 @@ def render_auto_refresh_selectbox(options: list[str]) -> str:
 
 
 
-def render_clipboard_tools(df: pd.DataFrame, *, key: str, height: int = 66) -> None:
+def emit_clipboard_copy(text: str, *, key: str) -> None:
+    escaped_text = json.dumps(text)
+
+    components.html(
+        f"""
+        <script>
+            const textToCopy = {escaped_text};
+
+            async function copyNow() {{
+                try {{
+                    if (navigator.clipboard && window.isSecureContext) {{
+                        await navigator.clipboard.writeText(textToCopy);
+                    }} else {{
+                        const temp = document.createElement("textarea");
+                        temp.value = textToCopy;
+                        temp.style.position = "fixed";
+                        temp.style.left = "-9999px";
+                        document.body.appendChild(temp);
+                        temp.focus();
+                        temp.select();
+                        document.execCommand("copy");
+                        document.body.removeChild(temp);
+                    }}
+                }} catch (error) {{
+                    console.error("Clipboard copy failed", error);
+                }}
+            }}
+
+            copyNow();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_clipboard_tools(df: pd.DataFrame, *, key: str) -> None:
     if df.empty:
         return
 
@@ -475,184 +510,38 @@ def render_clipboard_tools(df: pd.DataFrame, *, key: str, height: int = 66) -> N
     working_df.columns = [str(column) for column in working_df.columns]
 
     table_text = working_df.to_csv(index=False, sep="\t")
-    column_text_map = {
-        column: "\n".join([column] + working_df[column].astype(str).tolist())
-        for column in working_df.columns
-    }
+    column_options = list(working_df.columns)
 
-    option_html = "".join(
-        f'<option value="{html.escape(column)}">{html.escape(column)}</option>'
-        for column in working_df.columns
-    )
+    col1, col2, col3 = st.columns([1.0, 1.55, 1.15])
 
-    component_html = f"""
-    <style>
-        :root {{
-            --bc-bg: #0f1724;
-            --bc-bg-2: #151d2b;
-            --bc-border: #2a3445;
-            --bc-border-hover: #42536c;
-            --bc-text: #f8fafc;
-            --bc-text-soft: #cbd5e1;
-            --bc-accent: #ff5a4f;
-            --bc-success: #22c55e;
-        }}
+    with col1:
+        copy_table = st.button(
+            "Copy table",
+            key=f"{key}_copy_table",
+            use_container_width=True,
+        )
 
-        body {{
-            margin: 0;
-            background: transparent;
-            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }}
+    with col2:
+        selected_column = st.selectbox(
+            "Column to copy",
+            options=column_options,
+            key=f"{key}_copy_column_select",
+            label_visibility="collapsed",
+        )
 
-        .bc-copybar {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin: 0 0 10px 0;
-            flex-wrap: wrap;
-        }}
+    with col3:
+        copy_column = st.button(
+            "Copy column",
+            key=f"{key}_copy_column",
+            use_container_width=True,
+        )
 
-        .bc-btn,
-        .bc-select {{
-            height: 36px;
-            border-radius: 10px;
-            border: 1px solid var(--bc-border);
-            background: linear-gradient(180deg, var(--bc-bg-2) 0%, var(--bc-bg) 100%);
-            color: var(--bc-text);
-            font-size: 14px;
-            transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-        }}
+    if copy_table:
+        emit_clipboard_copy(table_text, key=f"{key}_table")
 
-        .bc-btn {{
-            padding: 0 14px;
-            cursor: pointer;
-            font-weight: 600;
-        }}
-
-        .bc-btn:hover {{
-            border-color: var(--bc-border-hover);
-            transform: translateY(-1px);
-        }}
-
-        .bc-btn:active {{
-            transform: translateY(0);
-        }}
-
-        .bc-btn.primary {{
-            border-color: rgba(255, 90, 79, 0.35);
-        }}
-
-        .bc-btn.primary:hover {{
-            border-color: rgba(255, 90, 79, 0.65);
-            box-shadow: 0 0 0 1px rgba(255, 90, 79, 0.18);
-        }}
-
-        .bc-select-wrap {{
-            position: relative;
-            min-width: 168px;
-        }}
-
-        .bc-select {{
-            width: 100%;
-            padding: 0 36px 0 12px;
-            appearance: none;
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            cursor: pointer;
-        }}
-
-        .bc-select:hover,
-        .bc-select:focus,
-        .bc-select:focus-visible {{
-            border-color: var(--bc-border-hover);
-            outline: none;
-            box-shadow: 0 0 0 1px rgba(66, 83, 108, 0.2);
-        }}
-
-        .bc-select-wrap::after {{
-            content: "▾";
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-52%);
-            color: var(--bc-text-soft);
-            pointer-events: none;
-            font-size: 12px;
-        }}
-
-        .bc-status {{
-            min-width: 68px;
-            font-size: 12px;
-            color: var(--bc-text-soft);
-        }}
-
-        .bc-status.success {{
-            color: var(--bc-success);
-        }}
-
-        .bc-status.error {{
-            color: var(--bc-accent);
-        }}
-    </style>
-
-    <div class="bc-copybar">
-        <button id="copy-table-{key}" class="bc-btn primary">Copy table</button>
-        <div class="bc-select-wrap">
-            <select id="copy-column-select-{key}" class="bc-select">
-                {option_html}
-            </select>
-        </div>
-        <button id="copy-column-{key}" class="bc-btn">Copy column</button>
-        <span id="copy-status-{key}" class="bc-status"></span>
-    </div>
-
-    <script>
-        const tableText_{key} = {json.dumps(table_text)};
-        const columnMap_{key} = {json.dumps(column_text_map)};
-
-        function setStatus_{key}(message, type) {{
-            const status = document.getElementById("copy-status-{key}");
-            status.textContent = message;
-            status.className = "bc-status " + (type || "");
-            setTimeout(() => {{
-                status.textContent = "";
-                status.className = "bc-status";
-            }}, type === "error" ? 2200 : 1500);
-        }}
-
-        async function copyText_{key}(text) {{
-            try {{
-                if (navigator.clipboard && window.isSecureContext) {{
-                    await navigator.clipboard.writeText(text);
-                }} else {{
-                    const temp = document.createElement("textarea");
-                    temp.value = text;
-                    temp.style.position = "fixed";
-                    temp.style.left = "-9999px";
-                    document.body.appendChild(temp);
-                    temp.focus();
-                    temp.select();
-                    document.execCommand("copy");
-                    document.body.removeChild(temp);
-                }}
-                setStatus_{key}("Copied", "success");
-            }} catch (error) {{
-                setStatus_{key}("Copy failed", "error");
-            }}
-        }}
-
-        document.getElementById("copy-table-{key}").addEventListener("click", function() {{
-            copyText_{key}(tableText_{key});
-        }});
-
-        document.getElementById("copy-column-{key}").addEventListener("click", function() {{
-            const selected = document.getElementById("copy-column-select-{key}").value;
-            copyText_{key}(columnMap_{key}[selected] || "");
-        }});
-    </script>
-    """
-    components.html(component_html, height=height)
+    if copy_column:
+        column_text = "\n".join([selected_column] + working_df[selected_column].astype(str).tolist())
+        emit_clipboard_copy(column_text, key=f"{key}_column")
 
 
 # -----------------------------
