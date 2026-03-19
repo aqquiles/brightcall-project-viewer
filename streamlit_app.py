@@ -468,94 +468,11 @@ def render_auto_refresh_selectbox(options: list[str]) -> str:
 
 
 def emit_clipboard_copy(text: str, *, key: str) -> None:
-    escaped_text = json.dumps(text)
-
-    components.html(
-        f"""
-        <script>
-            const textToCopy = {escaped_text};
-
-            async function copyNow() {{
-                try {{
-                    if (navigator.clipboard && window.isSecureContext) {{
-                        await navigator.clipboard.writeText(textToCopy);
-                    }} else {{
-                        const temp = document.createElement("textarea");
-                        temp.value = textToCopy;
-                        temp.style.position = "fixed";
-                        temp.style.left = "-9999px";
-                        document.body.appendChild(temp);
-                        temp.focus();
-                        temp.select();
-                        document.execCommand("copy");
-                        document.body.removeChild(temp);
-                    }}
-                }} catch (error) {{
-                    console.error("Clipboard copy failed", error);
-                }}
-            }}
-
-            copyNow();
-        </script>
-        """,
-        height=0,
-    )
+    return
 
 
 def render_clipboard_tools(df: pd.DataFrame, *, key: str) -> None:
-    if df.empty:
-        return
-
-    working_df = df.copy().fillna("")
-    working_df.columns = [str(column) for column in working_df.columns]
-
-    table_text = working_df.to_csv(index=False, sep="\t")
-    column_options = list(working_df.columns)
-
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stButton"] > button[kind="secondary"] {
-            padding: 0.32rem 0.75rem;
-            min-height: 2.1rem;
-            border-radius: 0.6rem;
-            font-size: 0.92rem;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    col1, col2, col3 = st.columns([0.78, 0.95, 1.45])
-
-    with col1:
-        copy_table = st.button(
-            "Copy table",
-            key=f"{key}_copy_table",
-            use_container_width=True,
-        )
-
-    with col2:
-        copy_column = st.button(
-            "Copy column",
-            key=f"{key}_copy_column",
-            use_container_width=True,
-        )
-
-    with col3:
-        selected_column = st.selectbox(
-            "Column to copy",
-            options=column_options,
-            key=f"{key}_copy_column_select",
-            label_visibility="collapsed",
-        )
-
-    if copy_table:
-        emit_clipboard_copy(table_text, key=f"{key}_table")
-
-    if copy_column:
-        column_text = "\n".join([selected_column] + working_df[selected_column].astype(str).tolist())
-        emit_clipboard_copy(column_text, key=f"{key}_column")
+    return
 
 
 # -----------------------------
@@ -823,8 +740,18 @@ def render_daily_client_report() -> None:
         else:
             st.info("No project rows were found for this account.")
 
+        json_content = json.dumps(
+            {
+                "account": target_account,
+                "account_total": account_total,
+                "projects": projects,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
         st.markdown("### Report exports")
-        export_left, export_right = st.columns(2)
+        export_left, export_mid, export_right = st.columns(3)
         with export_left:
             st.download_button(
                 "Download account CSV",
@@ -832,29 +759,23 @@ def render_daily_client_report() -> None:
                 file_name=f"{target_account.replace('@', '_at_')}_daily_report.csv",
                 mime="text/csv",
             )
-        with export_right:
+        with export_mid:
             st.download_button(
                 "Download HTML report",
                 data=html_report.encode("utf-8"),
                 file_name=f"{target_account.replace('@', '_at_')}_daily_report.html",
                 mime="text/html",
             )
+        with export_right:
+            st.download_button(
+                "Download JSON",
+                data=json_content.encode("utf-8"),
+                file_name=f"{target_account.replace('@', '_at_')}_daily_report.json",
+                mime="application/json",
+            )
 
         with st.expander("Show discovered account emails"):
             st.write(account_options)
-
-        with st.expander("Show raw tables"):
-            st.markdown("**Account total row**")
-            if not account_total_df.empty:
-                render_clipboard_tools(account_total_df, key="raw_account_total")
-            st.dataframe(account_total_df, use_container_width=True, hide_index=True)
-            st.markdown("**Project rows**")
-            if not projects_df.empty:
-                render_clipboard_tools(projects_df, key="raw_project_rows")
-            st.dataframe(projects_df, use_container_width=True, hide_index=True)
-
-        with st.expander("Show HTML report preview"):
-            components.html(html_report, height=900, scrolling=True)
 
         with st.expander("Show raw response preview"):
             st.code(html_payload[:5000], language="html")
