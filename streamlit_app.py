@@ -466,6 +466,10 @@ def render_auto_refresh_selectbox(options: list[str]) -> str:
     return st.selectbox(**selectbox_kwargs)
 
 
+def supports_fragment_auto_refresh() -> bool:
+    return hasattr(st, "fragment")
+
+
 
 def emit_clipboard_copy(text: str, *, key: str) -> None:
     return
