@@ -4,6 +4,7 @@ import html
 import inspect
 import json
 import re
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -13,6 +14,7 @@ import streamlit.components.v1 as components
 
 PROJECTS_URL = "https://api.dialer.brightcall.ai/api/v1/projects"
 DAILY_PROJECTS_URL = "https://api.dialer.brightcall.ai/api/v1/stat/daily-projects"
+CALLS_LIST_URL = "https://api.dialer.brightcall.ai/api/v3/stat/calls/list"
 
 DAILY_COLUMNS = [
     "userProject",
@@ -87,6 +89,10 @@ def get_daily_stats_api_key() -> str:
 
 def get_default_report_account() -> str:
     return str(st.secrets.get("DEFAULT_DAILY_REPORT_ACCOUNT", "")).strip()
+
+
+def get_calls_list_api_key() -> str:
+    return str(st.secrets.get("BRIGHTCALL_CALLS_LIST_API_KEY", "")).strip()
 
 
 def get_tag(project: dict[str, Any]) -> str:
@@ -479,6 +485,376 @@ def render_clipboard_tools(df: pd.DataFrame, *, key: str) -> None:
     return
 
 
+
+# -----------------------------
+# Calls list / transcript helpers
+# -----------------------------
+def safe_get(obj: Any, *keys: str, default: Any = None) -> Any:
+    cur = obj
+    for key in keys:
+        if isinstance(cur, dict) and key in cur:
+            cur = cur[key]
+        else:
+            return default
+    return cur
+
+
+def normalize_text(text: str | None) -> str:
+    if text is None:
+        return ""
+    text = str(text).replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" ?\n ?", "\n", text)
+    return text.strip()
+
+
+def format_from_segments(segments: list[dict[str, Any]] | None) -> str:
+    parts: list[str] = []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        speaker = str(seg.get("speaker", "")).strip().lower()
+        text = normalize_text(seg.get("text", ""))
+        if not text:
+            continue
+        if speaker in {"human", "ai"}:
+            parts.append(f"{speaker}: {text}")
+        elif speaker:
+            parts.append(f"{speaker}: {text}")
+        else:
+            parts.append(text)
+    return " | ".join(parts)
+
+
+def format_from_raw(raw_text: str | None) -> str:
+    text = normalize_text(raw_text)
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    return " | ".join(lines)
+
+
+def parse_unique_ids_input(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+
+    quoted_items = re.findall(r'"([^"]+)"', raw)
+    candidates = quoted_items if quoted_items else re.split(r"[\n,]+", raw)
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        normalized = str(item).strip().strip('"').strip("'")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            cleaned.append(normalized)
+    return cleaned
+
+
+def looks_like_call_record(item: Any) -> bool:
+    return isinstance(item, dict) and any(
+        key in item
+        for key in ("uniqueId", "aiAgentLog", "recordName", "id", "timestamp")
+    )
+
+
+def get_calls_from_payload(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, dict):
+        if isinstance(data.get("calls"), list):
+            return [item for item in data["calls"] if isinstance(item, dict)]
+
+        for key in ("data", "result", "items", "rows"):
+            value = data.get(key)
+            if isinstance(value, list) and any(looks_like_call_record(item) for item in value):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = get_calls_from_payload(value)
+                if nested:
+                    return nested
+
+        for value in data.values():
+            if isinstance(value, dict):
+                nested = get_calls_from_payload(value)
+                if nested:
+                    return nested
+            elif isinstance(value, list) and any(looks_like_call_record(item) for item in value):
+                return [item for item in value if isinstance(item, dict)]
+
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+
+    raise RuntimeError("JSON must be either a top-level list or an object with a 'calls' array.")
+
+
+def build_transcript_rows(calls: list[dict[str, Any]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+
+        convolo_call_id = (
+            safe_get(call, "aiAgentLog", "output", "convoloCallId")
+            or safe_get(call, "uniqueId")
+            or safe_get(call, "recordName")
+            or safe_get(call, "id")
+            or ""
+        )
+
+        transcription_segments = safe_get(call, "aiAgentLog", "transcription", default=[])
+        if isinstance(transcription_segments, list) and transcription_segments:
+            call_transcription = format_from_segments(transcription_segments)
+        else:
+            raw_text = safe_get(call, "aiAgentLog", "output", "callTranscription", default="")
+            call_transcription = format_from_raw(raw_text)
+
+        rows.append(
+            {
+                "uniqueId": str(safe_get(call, "uniqueId") or ""),
+                "convoloCallId": str(convolo_call_id),
+                "callTranscription": call_transcription,
+            }
+        )
+
+    return rows
+
+
+def build_calls_list_request_body(
+    *,
+    day_from: date,
+    day_to: date,
+    timezone: str,
+    date_interval: str,
+    unique_ids: list[str],
+    page: int,
+    items_per_page: int,
+    sort_by: str,
+    sort_direction: str,
+) -> dict[str, Any]:
+    return {
+        "dayFrom": day_from.isoformat(),
+        "dayTo": day_to.isoformat(),
+        "timezone": timezone.strip() or "America/New_York",
+        "dateInterval": date_interval,
+        "uniqueIds": unique_ids,
+        "page": int(page),
+        "itemsPerPage": int(items_per_page),
+        "sortBy": sort_by.strip() or "timestamp",
+        "sortDirection": sort_direction,
+    }
+
+
+@st.cache_data(ttl=300)
+def fetch_calls_list_payload(api_key: str, request_body_json: str) -> Any:
+    request_body = json.loads(request_body_json)
+    response = requests.post(
+        CALLS_LIST_URL,
+        params={"api-key": api_key},
+        json=request_body,
+        timeout=180,
+    )
+    response.raise_for_status()
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ValueError("The calls list endpoint did not return valid JSON.") from exc
+
+
+def build_transcript_csv(rows: list[dict[str, str]]) -> bytes:
+    transcript_df = pd.DataFrame(rows, columns=["uniqueId", "convoloCallId", "callTranscription"])
+    return transcript_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+
+
+def render_call_transcripts_tab() -> None:
+    st.subheader("Call Transcripts")
+    st.caption("Fetch calls from the calls list endpoint and extract single-line transcripts from the API response.")
+
+    calls_list_api_key = get_calls_list_api_key()
+    if not calls_list_api_key:
+        st.warning("Add BRIGHTCALL_CALLS_LIST_API_KEY to Streamlit secrets to enable this tab.")
+        return
+
+    if "calls_list_last_request_json" not in st.session_state:
+        st.session_state["calls_list_last_request_json"] = ""
+
+    with st.form("calls_list_form", clear_on_submit=False):
+        row1_col1, row1_col2, row1_col3, row1_col4 = st.columns([1, 1, 1.2, 1])
+        with row1_col1:
+            day_from = st.date_input("Day from", value=date(2025, 12, 1), key="calls_list_day_from")
+        with row1_col2:
+            day_to = st.date_input("Day to", value=date(2026, 3, 30), key="calls_list_day_to")
+        with row1_col3:
+            timezone = st.text_input("Timezone", value="America/New_York", key="calls_list_timezone")
+        with row1_col4:
+            date_interval = st.selectbox(
+                "Date interval",
+                options=["day", "hour", "month"],
+                index=0,
+                key="calls_list_date_interval",
+            )
+
+        row2_col1, row2_col2, row2_col3, row2_col4 = st.columns([1, 1, 1, 1])
+        with row2_col1:
+            page = st.number_input("Page", min_value=1, value=1, step=1, key="calls_list_page")
+        with row2_col2:
+            items_per_page = st.number_input(
+                "Items per page",
+                min_value=1,
+                max_value=5000,
+                value=500,
+                step=1,
+                key="calls_list_items_per_page",
+            )
+        with row2_col3:
+            sort_by = st.text_input("Sort by", value="timestamp", key="calls_list_sort_by")
+        with row2_col4:
+            sort_direction = st.selectbox(
+                "Sort direction",
+                options=["DESC", "ASC"],
+                index=0,
+                key="calls_list_sort_direction",
+            )
+
+        unique_ids_input = st.text_area(
+            "Unique IDs",
+            value=st.session_state.get("calls_list_unique_ids_input", ""),
+            height=260,
+            placeholder="Paste a JSON array or one uniqueId per line.",
+            help="You can paste the IDs as a JSON array or as a plain newline/comma-separated list.",
+            key="calls_list_unique_ids",
+        )
+
+        submit_calls_form = st.form_submit_button("Fetch call transcripts", use_container_width=False)
+
+    if submit_calls_form:
+        parsed_unique_ids = parse_unique_ids_input(unique_ids_input)
+        st.session_state["calls_list_unique_ids_input"] = unique_ids_input
+
+        if not parsed_unique_ids:
+            st.error("Paste at least one uniqueId before fetching.")
+            st.session_state["calls_list_last_request_json"] = ""
+            return
+
+        request_body = build_calls_list_request_body(
+            day_from=day_from,
+            day_to=day_to,
+            timezone=timezone,
+            date_interval=date_interval,
+            unique_ids=parsed_unique_ids,
+            page=int(page),
+            items_per_page=int(items_per_page),
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        )
+        st.session_state["calls_list_last_request_json"] = json.dumps(request_body, ensure_ascii=False)
+        fetch_calls_list_payload.clear()
+
+    last_request_json = st.session_state.get("calls_list_last_request_json", "")
+    if not last_request_json:
+        st.info("Paste the unique IDs and click Fetch call transcripts.")
+        return
+
+    current_request = json.loads(last_request_json)
+
+    refresh_col, info_col = st.columns([1.1, 3.9])
+    with refresh_col:
+        refresh_calls = st.button("Refresh transcript data", use_container_width=True)
+    with info_col:
+        st.caption("Calls list API key is read from Streamlit secrets.")
+
+    if refresh_calls:
+        fetch_calls_list_payload.clear()
+
+    try:
+        raw_payload = fetch_calls_list_payload(calls_list_api_key, last_request_json)
+        calls = get_calls_from_payload(raw_payload)
+        transcript_rows = build_transcript_rows(calls)
+    except requests.HTTPError as exc:
+        st.error(f"HTTP error while calling the calls list endpoint: {exc}")
+        return
+    except requests.RequestException as exc:
+        st.error(f"Request error while calling the calls list endpoint: {exc}")
+        return
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:
+        st.error(f"Unexpected error while building the transcript view: {exc}")
+        return
+
+    transcript_df = pd.DataFrame(transcript_rows, columns=["uniqueId", "convoloCallId", "callTranscription"])
+    transcript_search = st.text_input(
+        "Transcript search",
+        value="",
+        help="Filter by uniqueId, convoloCallId, or transcript text.",
+        key="calls_list_transcript_search",
+    ).strip()
+
+    if transcript_search and not transcript_df.empty:
+        mask = (
+            transcript_df["uniqueId"].str.contains(transcript_search, case=False, na=False)
+            | transcript_df["convoloCallId"].str.contains(transcript_search, case=False, na=False)
+            | transcript_df["callTranscription"].str.contains(transcript_search, case=False, na=False)
+        )
+        transcript_df = transcript_df[mask].reset_index(drop=True)
+
+    populated_transcripts = int((transcript_df["callTranscription"].str.len() > 0).sum()) if not transcript_df.empty else 0
+    empty_transcripts = int(len(transcript_df) - populated_transcripts)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Requested IDs", len(current_request.get("uniqueIds", [])))
+    m2.metric("Returned Calls", len(calls))
+    m3.metric("With Transcript", populated_transcripts)
+    m4.metric("Empty Transcript", empty_transcripts)
+
+    st.markdown("### Extracted transcripts")
+    if transcript_df.empty:
+        st.info("No calls matched the current request or search filter.")
+    else:
+        st.dataframe(transcript_df, use_container_width=True, hide_index=True)
+
+    extracted_json = json.dumps(
+        {
+            "request": current_request,
+            "rows": transcript_df.to_dict(orient="records"),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+    raw_json = json.dumps(raw_payload, indent=2, ensure_ascii=False, default=str)
+
+    st.markdown("### Transcript exports")
+    export_col1, export_col2, export_col3 = st.columns(3)
+    with export_col1:
+        st.download_button(
+            "Download transcript CSV",
+            data=build_transcript_csv(transcript_df.to_dict(orient="records")),
+            file_name="brightcall_call_transcripts.csv",
+            mime="text/csv",
+        )
+    with export_col2:
+        st.download_button(
+            "Download extracted JSON",
+            data=extracted_json.encode("utf-8"),
+            file_name="brightcall_call_transcripts.json",
+            mime="application/json",
+        )
+    with export_col3:
+        st.download_button(
+            "Download raw response JSON",
+            data=raw_json.encode("utf-8"),
+            file_name="brightcall_calls_list_raw.json",
+            mime="application/json",
+        )
+
+    with st.expander("Show current request body"):
+        st.code(json.dumps(current_request, indent=2, ensure_ascii=False), language="json")
+
+    with st.expander("Show raw response preview"):
+        st.code(raw_json[:15000], language="json")
+
 # -----------------------------
 # Rendering
 # -----------------------------
@@ -795,13 +1171,18 @@ def render_daily_client_report() -> None:
 
 
 def main() -> None:
-    viewer_tab, daily_report_tab = st.tabs(["Project viewer", "Daily client report"])
+    viewer_tab, daily_report_tab, transcripts_tab = st.tabs(
+        ["Project viewer", "Daily client report", "Call transcripts"]
+    )
 
     with viewer_tab:
         render_project_viewer()
 
     with daily_report_tab:
         render_daily_client_report()
+
+    with transcripts_tab:
+        render_call_transcripts_tab()
 
 
 if __name__ == "__main__":
