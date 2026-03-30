@@ -861,7 +861,7 @@ def render_call_transcripts_tab() -> None:
 def render_project_viewer() -> None:
     st.subheader("Project Viewer")
 
-    project_api_key = get_project_api_key()
+    secret_project_api_key = get_project_api_key()
 
     with st.sidebar:
         st.header("Project Viewer Settings")
@@ -870,13 +870,29 @@ def render_project_viewer() -> None:
             "Projects API Key",
             value="",
             type="password",
+            key="project_viewer_manual_api_key",
             help="Optional. If blank, the app uses BRIGHTCALL_API_KEY from Streamlit secrets.",
         )
-        include_missing = st.checkbox("Include missing transfer number", value=True)
-        refresh_projects = st.button("Refresh projects data")
+        include_missing = st.checkbox(
+            "Include missing transfer number",
+            value=True,
+            key="project_viewer_include_missing",
+        )
+        refresh_projects = st.button(
+            "Refresh projects data",
+            key="project_viewer_refresh_button",
+        )
 
-    if manual_key:
-        project_api_key = manual_key.strip()
+    manual_key = manual_key.strip()
+    project_api_key = manual_key if manual_key else secret_project_api_key
+    api_key_source = "manual field" if manual_key else "Streamlit secrets"
+
+    if "project_viewer_last_effective_api_key" not in st.session_state:
+        st.session_state["project_viewer_last_effective_api_key"] = project_api_key
+
+    if project_api_key != st.session_state["project_viewer_last_effective_api_key"]:
+        fetch_projects.clear()
+        st.session_state["project_viewer_last_effective_api_key"] = project_api_key
 
     if not project_api_key:
         st.warning("Add BRIGHTCALL_API_KEY to Streamlit secrets or paste a projects API key in the sidebar.")
@@ -884,6 +900,8 @@ def render_project_viewer() -> None:
 
     if refresh_projects:
         fetch_projects.clear()
+
+    st.caption(f"Projects endpoint currently using API key from: {api_key_source}.")
 
     try:
         projects = fetch_projects(project_api_key)
